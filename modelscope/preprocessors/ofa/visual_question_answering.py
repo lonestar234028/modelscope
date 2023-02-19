@@ -108,36 +108,41 @@ class OfaVisualQuestionAnsweringPreprocessor(OfaBasePreprocessor):
 
         return sample
 
+    def _build_infer_sample_list(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        image0 = self.get_img_pil(data[self.column_map['image']][0])
+        image1 = self.get_img_pil(data[self.column_map['image']][1])
+        patch_image = self.patch_resize_transform(image0)
+        patch_image_2 = self.patch_resize_transform(image1)
+        text = ' {}'.format(data[self.column_map['text']])
+        inputs = self.tokenize_text(text)
+        if self.prompt_type == 'none':
+            decoder_prompt = self.bos_item
+        elif self.prompt_type == 'src':
+            decoder_prompt = inputs
+        elif self.prompt_type == 'prev_output':
+            decoder_prompt = inputs[:-1]
+        else:
+            raise NotImplementedError
+        sample = {
+            'source': inputs,
+            'patch_image': patch_image,
+            'patch_image_2': patch_image_2,
+            'patch_mask': torch.tensor([True]),
+            'decoder_prompt': decoder_prompt,
+        }
+        if 'answer' in self.column_map and self.column_map['answer'] in data:
+            sample['label'] = data[self.column_map['answer']]
+        return sample
+
     def _build_infer_sample(self, data: Dict[str, Any]) -> Dict[str, Any]:
-        r"""
-        Building inference samples.
-
-        step 1. Preprocessing image input for model's image input.
-            - get pillow image from data.
-            - do some transforms to the pillow image, such as resize, normalize etc.
-        step 2. Preprocessing the text input for model's text input.
-            - add blank in the front of input text.
-            - tokenize the result above as source text input.
-        step 3. Calculating the decoder prompt.
-            - if `prompt_type` is `None`, using bos token.
-            - if `prompt_type` is `src`, using source text input
-            - if `prompt_type` is `prev_output`, using source text input without eos token.
-        step 4. Whether or not to add label data which refer to an answer to the question
-            in this task.
-
-        Args:
-            data (`Dict[str, Any]`): Input data, should contains the key of `image`
-                `text`.
-        Return:
-            A dict object, contains source text input, patch images, patch masks
-            with `Tensor([True])`, decoder prompt and label.
-        """
-        image = self.get_img_pil(data[self.column_map['image']])
+        img_info = data[self.column_map['image']]
+        if isinstance(img_info, list):
+            return self._build_infer_sample_list(data)
+        image = self.get_img_pil(img_info)
+       
         patch_image = self.patch_resize_transform(image)
-        text = data[self.column_map['text']]
-        text = self.pre_question(text, self.max_src_length)
-        text = text + '?' if not text.endswith('?') else text
-        inputs = self.tokenize_text(f' {text}')
+        text = ' {}'.format(data[self.column_map['text']])
+        inputs = self.tokenize_text(text)
         if self.prompt_type == 'none':
             decoder_prompt = self.bos_item
         elif self.prompt_type == 'src':

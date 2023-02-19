@@ -37,6 +37,9 @@ def collate_fn(samples, pad_idx, eos_idx):
     if samples[0].get('patch_image', None) is not None:
         batch['net_input']['patch_images'] = torch.stack(
             [sample['patch_image'] for sample in samples], dim=0)
+    if samples[0].get('patch_image_2', None) is not None:
+        batch['net_input']['patch_images_2'] = torch.stack(
+            [sample['patch_image_2'] for sample in samples], dim=0)
     if samples[0].get('patch_mask', None) is not None:
         batch['net_input']['patch_masks'] = torch.cat(
             [sample['patch_mask'] for sample in samples])

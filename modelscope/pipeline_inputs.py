@@ -24,8 +24,8 @@ class InputType(object):
 
 
 INPUT_TYPE = {
-    InputType.IMAGE: (str, np.ndarray, Image.Image),
-    InputType.TEXT: str,
+    InputType.IMAGE: (str, np.ndarray, Image.Image, list),
+    InputType.TEXT: (str,list),
     InputType.AUDIO: (str, bytes, np.ndarray),
     InputType.VIDEO: (str, np.ndarray, 'cv2.VideoCapture'),
     InputType.BOX: (list, np.ndarray),
