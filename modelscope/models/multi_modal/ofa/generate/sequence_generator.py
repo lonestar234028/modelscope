@@ -202,6 +202,16 @@ class SequenceGenerator(nn.Module):
             ],
         )
         net_input = sample['net_input']
+        print("sample['samples']: ", sample['samples'])
+        
+        all_text_encoders_input = []
+        if 'all_text_encoders_input' in net_input :
+            all_text_encoders_input = net_input['all_text_encoders_input'] 
+            del net_input['all_text_encoders_input']
+        for k,v in net_input.items():
+            print("net_input, k:{},v:{}".format(k, v.size()))
+       
+        import copy
 
         if 'src_tokens' in net_input:
             src_tokens = net_input['src_tokens']
@@ -257,21 +267,82 @@ class SequenceGenerator(nn.Module):
             self.min_len <= max_len
         ), 'min_len cannot be larger than max_len, please adjust these!'
         # compute the encoder output for each beam
+        all_text_encoders_output = []
         with torch.autograd.profiler.record_function(
                 'EnsembleModel: forward_encoder'):
             encoder_outs = model.forward_encoder(net_input)
+            for item in all_text_encoders_input:
+                encoder_outs1 = model.forward_encoder(item['net_input'])
+                all_text_encoders_output.append(encoder_outs1)
+        def print_encoder_info(encoder_in, name):        
+            print("name:{}, k:{}, v:{}".format(name, "last_hidden_state", encoder_in.last_hidden_state.size()))
+            print("name:{}, k:{}, v:{}".format(name, "padding_mask", encoder_in.padding_mask.size()))
+            print("name:{}, k:{}, v:{}".format(name, "position_embedding", encoder_in.position_embedding.size()))
 
+        encoder_output_new = copy.deepcopy(encoder_outs)
+        encoder_all_tmp = []
+        pos_embed_tmp = []
+        padding_mask_tmp = []
+        anchor_emb = []
+        idx2sim = {}
+
+        def calc_similarity(anchor_emb, target_emb):
+            print("anchor_emb:", anchor_emb.size())
+            print("target_emb:", target_emb.size())
+            cos = nn.CosineSimilarity(dim=0, eps=1e-6)
+            return cos(anchor_emb[0, 0, :], target_emb[0, 0, :])
+
+        def mean_pooling(token_embeddings):
+            sentence_embeddings = token_embeddings.mean(dim=1)
+            # sentence_embeddings = token_embeddings[:,0,:]
+            return sentence_embeddings
+
+        if len(all_text_encoders_output) > 0:
+            for i,item in enumerate(all_text_encoders_output):
+                print_encoder_info(item[0], "encoder_outs" + str(i))
+                if i == 0 :
+                    encoder_all_tmp.append(item[0]['last_hidden_state'])
+                    pos_embed_tmp.append(item[0]['position_embedding'])
+                    padding_mask_tmp.append( item[0]['padding_mask'])
+                sentence_embs.append(mean_pooling(item[0]['last_hidden_state']))
+            idx2sim = {}
+            for ii in range(1, len(all_text_encoders_output)):
+                cos = nn.CosineSimilarity(dim=1)
+                # idx2sim[ii] = sentence_embs[0] @ sentence_embs[ii].t()
+                idx2sim[ii] = cos(sentence_embs[0], sentence_embs[ii])
+            newidx2sim = sorted(idx2sim.items(), key=lambda x: x[1], reverse=True)
+            print("idx2sim: ", idx2sim)
+            print("newidx2sim: ", list(map(lambda x: x[0], newidx2sim)))
+
+            topk = 2 if len(newidx2sim) > 2 else len(newidx2sim)
+            newidx2sim = newidx2sim[:topk]
+
+            for ii in newidx2sim:
+                idx = ii[0]
+                encoder_all_tmp.append(all_text_encoders_output[idx][0]['last_hidden_state'])
+                pos_embed_tmp.append(all_text_encoders_output[idx][0]['position_embedding'])
+                padding_mask_tmp.append(all_text_encoders_output[idx][0]['padding_mask'])
+
+            encoder_output_new[0]['last_hidden_state'] = torch.cat(encoder_all_tmp, 1)
+            encoder_output_new[0]['position_embedding'] = torch.cat(pos_embed_tmp, 1)
+            encoder_output_new[0]['padding_mask'] = torch.cat(padding_mask_tmp, 1)
+            print_encoder_info(encoder_output_new[0], "encoder_output_new")
         # placeholder of indices for bsz * beam_size to hold tokens and accumulative scores
         new_order = torch.arange(bsz).view(-1, 1).repeat(1, beam_size).view(-1)
         new_order = new_order.to(src_tokens.device).long()
-        encoder_outs = model.reorder_encoder_out(encoder_outs, new_order)
+        # encoder_outs = model.reorder_encoder_out(encoder_outs, new_order)
+        encoder_output_new = model.reorder_encoder_out(encoder_output_new, new_order)
         # ensure encoder_outs is a List.
-        assert encoder_outs is not None
+        # assert encoder_outs is not None
+        print("encoder_outs after new_order:", new_order)
+        # print("encoder_outs after reroder:", encoder_outs[0].position_embedding.shape)
+        print("encoder_output_new after reroder:", encoder_output_new[0].position_embedding.shape)
 
         # initialize buffers
         scores = (torch.zeros(bsz * beam_size,
                               max_len + 1).to(src_tokens).float()
                   )  # +1 for eos; pad is never chosen for scoring
+        print("scores:", scores.shape)
         tokens = (torch.zeros(bsz * beam_size,
                               max_len + 2).to(src_tokens).long().fill_(
                                   self.pad))  # +2 for eos and pad
@@ -329,14 +400,15 @@ class SequenceGenerator(nn.Module):
                     original_batch_idxs = original_batch_idxs[batch_idxs]
                 model.reorder_incremental_state(incremental_states,
                                                 reorder_state)
-                encoder_outs = model.reorder_encoder_out(
-                    encoder_outs, reorder_state)
+                encoder_output_new = model.reorder_encoder_out(
+                    encoder_output_new, reorder_state)
 
             with torch.autograd.profiler.record_function(
                     'EnsembleModel: forward_decoder'):
                 lprobs, avg_attn_scores = model.forward_decoder(
                     tokens[:, :step + 1],
-                    encoder_outs,
+                    # encoder_outs,
+                    encoder_output_new ,
                     incremental_states,
                     self.temperature,
                     constraint_trie=self.constraint_trie,

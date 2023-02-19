@@ -222,13 +222,24 @@ class Pipeline(ABC):
         forward_params = kwargs.get('forward_params', {})
         postprocess_params = kwargs.get('postprocess_params', {})
         self._check_input(input)
+        import copy
+      
+        all_text_encoders_input = []
         out = self.preprocess(input, **preprocess_params)
-
+        if isinstance(input['text'], list):
+            for item in input['text']:
+                tmp_e =  copy.deepcopy(input)
+                tmp_e['text'] = item
+                out_tmp = self.preprocess(tmp_e, **preprocess_params)
+                all_text_encoders_input.append(out_tmp)
+            print("_process_single all_text_encoders_input:", all_text_encoders_input)
+        
         with device_placement(self.framework, self.device_name):
             if self.framework == Frameworks.torch:
                 with torch.no_grad():
                     if self._auto_collate:
                         out = self._collate_fn(out)
+                    out['net_input']['all_text_encoders_input'] = all_text_encoders_input
                     out = self.forward(out, **forward_params)
             else:
                 out = self.forward(out, **forward_params)
