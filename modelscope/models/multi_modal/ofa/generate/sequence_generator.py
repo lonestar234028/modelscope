@@ -278,20 +278,45 @@ class SequenceGenerator(nn.Module):
             print("name:{}, k:{}, v:{}".format(name, "last_hidden_state", encoder_in.last_hidden_state.size()))
             print("name:{}, k:{}, v:{}".format(name, "padding_mask", encoder_in.padding_mask.size()))
             print("name:{}, k:{}, v:{}".format(name, "position_embedding", encoder_in.position_embedding.size()))
+
         encoder_output_new = copy.deepcopy(encoder_outs)
         encoder_all_tmp = []
         pos_embed_tmp = []
         padding_mask_tmp = []
-        if len(all_text_encoders_output) > 0 :
-            for i,item in enumerate(all_text_encoders_output):
+        anchor_emb = []
+        idx2sim = {}
+
+        def calc_similarity(anchor_emb, target_emb):
+            print("anchor_emb:", anchor_emb.size())
+            print("target_emb:", target_emb.size())
+            cos = nn.CosineSimilarity(dim=0, eps=1e-6)
+            return cos(anchor_emb[0, 0, :], target_emb[0, 0, :])
+
+        if len(all_text_encoders_output) > 0:
+            for i, item in enumerate(all_text_encoders_output):
+                if i == 0:
+                    anchor_emb = item[0]['last_hidden_state']
+                    encoder_all_tmp.append(item[0]['last_hidden_state'])
+                    pos_embed_tmp.append(item[0]['position_embedding'])
+                    padding_mask_tmp.append(item[0]['padding_mask'])
+                    continue
                 print_encoder_info(item[0], "encoder_outs" + str(i))
-                encoder_all_tmp.append(item[0]['last_hidden_state'])
-                pos_embed_tmp.append(item[0]['position_embedding'])
-                padding_mask_tmp.append( item[0]['padding_mask'])
-        
-            encoder_output_new[0]['last_hidden_state'] = torch.cat( encoder_all_tmp,  1)
-            encoder_output_new[0]['position_embedding'] = torch.cat( pos_embed_tmp,  1)
-            encoder_output_new[0]['padding_mask'] = torch.cat( padding_mask_tmp,  1)
+                idx2sim[i] = calc_similarity(anchor_emb, item[0]['last_hidden_state'])
+            newidx2sim = sorted(idx2sim.items(), key=lambda x: x[1], reverse=True)
+            print("idx2sim: ", idx2sim)
+            print("newidx2sim: ", newidx2sim)
+            topk = 2 if len(newidx2sim) > 2 else len(newidx2sim)
+            newidx2sim = newidx2sim[:topk]
+            for ii in newidx2sim:
+                idx = ii[0]
+                encoder_all_tmp.append(all_text_encoders_output[idx][0]['last_hidden_state'])
+                pos_embed_tmp.append(all_text_encoders_output[idx][0]['position_embedding'])
+                padding_mask_tmp.append(all_text_encoders_output[idx][0]['padding_mask'])
+
+            encoder_output_new[0]['last_hidden_state'] = torch.cat(encoder_all_tmp, 1)
+            encoder_output_new[0]['position_embedding'] = torch.cat(pos_embed_tmp, 1)
+            encoder_output_new[0]['padding_mask'] = torch.cat(padding_mask_tmp, 1)
+            print_encoder_info(encoder_output_new[0], "encoder_output_new")
         # placeholder of indices for bsz * beam_size to hold tokens and accumulative scores
         new_order = torch.arange(bsz).view(-1, 1).repeat(1, beam_size).view(-1)
         new_order = new_order.to(src_tokens.device).long()
