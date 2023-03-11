@@ -292,21 +292,31 @@ class SequenceGenerator(nn.Module):
             cos = nn.CosineSimilarity(dim=0, eps=1e-6)
             return cos(anchor_emb[0, 0, :], target_emb[0, 0, :])
 
+        def mean_pooling(token_embeddings):
+            sentence_embeddings = token_embeddings.mean(dim=1)
+            # sentence_embeddings = token_embeddings[:,0,:]
+            return sentence_embeddings
+
         if len(all_text_encoders_output) > 0:
-            for i, item in enumerate(all_text_encoders_output):
-                if i == 0:
-                    anchor_emb = item[0]['last_hidden_state']
+            for i,item in enumerate(all_text_encoders_output):
+                print_encoder_info(item[0], "encoder_outs" + str(i))
+                if i == 0 :
                     encoder_all_tmp.append(item[0]['last_hidden_state'])
                     pos_embed_tmp.append(item[0]['position_embedding'])
-                    padding_mask_tmp.append(item[0]['padding_mask'])
-                    continue
-                print_encoder_info(item[0], "encoder_outs" + str(i))
-                idx2sim[i] = calc_similarity(anchor_emb, item[0]['last_hidden_state'])
+                    padding_mask_tmp.append( item[0]['padding_mask'])
+                sentence_embs.append(mean_pooling(item[0]['last_hidden_state']))
+            idx2sim = {}
+            for ii in range(1, len(all_text_encoders_output)):
+                cos = nn.CosineSimilarity(dim=1)
+                # idx2sim[ii] = sentence_embs[0] @ sentence_embs[ii].t()
+                idx2sim[ii] = cos(sentence_embs[0], sentence_embs[ii])
             newidx2sim = sorted(idx2sim.items(), key=lambda x: x[1], reverse=True)
             print("idx2sim: ", idx2sim)
-            print("newidx2sim: ", newidx2sim)
+            print("newidx2sim: ", list(map(lambda x: x[0], newidx2sim)))
+
             topk = 2 if len(newidx2sim) > 2 else len(newidx2sim)
             newidx2sim = newidx2sim[:topk]
+
             for ii in newidx2sim:
                 idx = ii[0]
                 encoder_all_tmp.append(all_text_encoders_output[idx][0]['last_hidden_state'])
