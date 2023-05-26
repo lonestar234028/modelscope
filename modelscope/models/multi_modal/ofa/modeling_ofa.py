@@ -1205,7 +1205,7 @@ class OFAEncoder(OFAPreTrainedModel):
                 image_x_2 += image_pos_embed_2
             if self.type_embedding is not None:
                 image_x_2 += self.type_embedding(
-                    input_ids.new_full(image_x_2.size()[:2], fill_value=2))
+                    input_ids.new_full(image_x_2.size()[:2], fill_value=1))
             if self.patch_layernorm_embedding is not None:
                 image_x_2 = self.patch_layernorm_embedding(image_x_2)
             image_x_2 = self.dropout(image_x_2)
