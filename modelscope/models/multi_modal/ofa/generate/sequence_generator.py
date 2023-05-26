@@ -140,7 +140,7 @@ class SequenceGenerator(nn.Module):
         self.lm_weight = lm_weight
         if self.lm_model is not None:
             self.lm_model.eval()
-
+        print("self.lm_model :", self.lm_model )
         self.constraint_trie = constraint_trie
 
         self.constraint_start = None
@@ -202,14 +202,14 @@ class SequenceGenerator(nn.Module):
             ],
         )
         net_input = sample['net_input']
-        print("sample['samples']: ", sample['samples'])
+        print("_generate, sample['samples']: ", sample['samples'])
         
         all_text_encoders_input = []
         if 'all_text_encoders_input' in net_input :
             all_text_encoders_input = net_input['all_text_encoders_input'] 
             del net_input['all_text_encoders_input']
         for k,v in net_input.items():
-            print("net_input, k:{},v:{}".format(k, v.size()))
+            print("_generate, net_input, k:{},v:{}".format(k, v.size()))
        
         import copy
 
@@ -218,11 +218,14 @@ class SequenceGenerator(nn.Module):
             # length of the source text being the character length except EndOfSentence and pad
             src_lengths = ((src_tokens.ne(self.eos)
                             & src_tokens.ne(self.pad)).long().sum(dim=1))
+            print("src_tokens:", src_tokens.shape)
         elif 'input_ids' in net_input:
             src_tokens = net_input['input_ids']
             # length of the source text being the character length except EndOfSentence and pad
             src_lengths = ((src_tokens.ne(self.eos)
                             & src_tokens.ne(self.pad)).long().sum(dim=1))
+            print("input_ids:", src_tokens.shape)
+
         elif 'source' in net_input:
             src_tokens = net_input['source']
             src_lengths = (
@@ -230,6 +233,7 @@ class SequenceGenerator(nn.Module):
                 - net_input['padding_mask'].sum(-1)
                 if net_input['padding_mask'] is not None else torch.tensor(
                     src_tokens.size(-1)).to(src_tokens))
+            print("source:", src_tokens.shape)
         elif 'features' in net_input:
             src_tokens = net_input['features']
             src_lengths = (
@@ -237,9 +241,7 @@ class SequenceGenerator(nn.Module):
                 - net_input['padding_mask'].sum(-1)
                 if net_input['padding_mask'] is not None else torch.tensor(
                     src_tokens.size(-1)).to(src_tokens))
-        elif 'fbank' in net_input:
-            src_tokens = net_input['fbank']
-            src_lengths = net_input['fbank_length']
+            print("features:", src_tokens.shape)
         else:
             raise Exception(
                 'expected src_tokens or source in net input. input keys: '
@@ -275,29 +277,21 @@ class SequenceGenerator(nn.Module):
                 encoder_outs1 = model.forward_encoder(item['net_input'])
                 all_text_encoders_output.append(encoder_outs1)
         def print_encoder_info(encoder_in, name):        
-            print("name:{}, k:{}, v:{}".format(name, "last_hidden_state", encoder_in.last_hidden_state.size()))
-            print("name:{}, k:{}, v:{}".format(name, "padding_mask", encoder_in.padding_mask.size()))
-            print("name:{}, k:{}, v:{}".format(name, "position_embedding", encoder_in.position_embedding.size()))
+            print("_generate,name:{}, k:{}, v:{}".format(name, "last_hidden_state", encoder_in.last_hidden_state.size()))
+            print("_generate,name:{}, k:{}, v:{}".format(name, "padding_mask", encoder_in.padding_mask.size()))
+            print("_generate,name:{}, k:{}, v:{}".format(name, "position_embedding", encoder_in.position_embedding.size()))
+        
+        def mean_pooling(token_embeddings):
+            # sentence_embeddings = token_embeddings.mean(dim=1)
+            sentence_embeddings = token_embeddings[:,0,:]
+            return sentence_embeddings
 
         encoder_output_new = copy.deepcopy(encoder_outs)
         encoder_all_tmp = []
         pos_embed_tmp = []
         padding_mask_tmp = []
-        anchor_emb = []
-        idx2sim = {}
-
-        def calc_similarity(anchor_emb, target_emb):
-            print("anchor_emb:", anchor_emb.size())
-            print("target_emb:", target_emb.size())
-            cos = nn.CosineSimilarity(dim=0, eps=1e-6)
-            return cos(anchor_emb[0, 0, :], target_emb[0, 0, :])
-
-        def mean_pooling(token_embeddings):
-            sentence_embeddings = token_embeddings.mean(dim=1)
-            # sentence_embeddings = token_embeddings[:,0,:]
-            return sentence_embeddings
-
-        if len(all_text_encoders_output) > 0:
+        sentence_embs = []
+        if len(all_text_encoders_output) > 0 :
             for i,item in enumerate(all_text_encoders_output):
                 print_encoder_info(item[0], "encoder_outs" + str(i))
                 if i == 0 :
@@ -305,28 +299,27 @@ class SequenceGenerator(nn.Module):
                     pos_embed_tmp.append(item[0]['position_embedding'])
                     padding_mask_tmp.append( item[0]['padding_mask'])
                 sentence_embs.append(mean_pooling(item[0]['last_hidden_state']))
+            # if len(all_text_encoders_output) > 2
             idx2sim = {}
-            for ii in range(1, len(all_text_encoders_output)):
+            for ii in range(1,len(all_text_encoders_output)):
                 cos = nn.CosineSimilarity(dim=1)
                 # idx2sim[ii] = sentence_embs[0] @ sentence_embs[ii].t()
                 idx2sim[ii] = cos(sentence_embs[0], sentence_embs[ii])
-            newidx2sim = sorted(idx2sim.items(), key=lambda x: x[1], reverse=True)
+            newidx2sim = sorted(idx2sim.items(), key = lambda x: x[1], reverse= True)
             print("idx2sim: ", idx2sim)
             print("newidx2sim: ", list(map(lambda x: x[0], newidx2sim)))
 
             topk = 2 if len(newidx2sim) > 2 else len(newidx2sim)
             newidx2sim = newidx2sim[:topk]
-
             for ii in newidx2sim:
                 idx = ii[0]
                 encoder_all_tmp.append(all_text_encoders_output[idx][0]['last_hidden_state'])
                 pos_embed_tmp.append(all_text_encoders_output[idx][0]['position_embedding'])
-                padding_mask_tmp.append(all_text_encoders_output[idx][0]['padding_mask'])
-
-            encoder_output_new[0]['last_hidden_state'] = torch.cat(encoder_all_tmp, 1)
-            encoder_output_new[0]['position_embedding'] = torch.cat(pos_embed_tmp, 1)
-            encoder_output_new[0]['padding_mask'] = torch.cat(padding_mask_tmp, 1)
-            print_encoder_info(encoder_output_new[0], "encoder_output_new")
+                padding_mask_tmp.append( all_text_encoders_output[idx][0]['padding_mask'])
+            encoder_output_new[0]['last_hidden_state'] = torch.cat( encoder_all_tmp,  1)
+            encoder_output_new[0]['position_embedding'] = torch.cat( pos_embed_tmp,  1)
+            encoder_output_new[0]['padding_mask'] = torch.cat( padding_mask_tmp,  1)
+            
         # placeholder of indices for bsz * beam_size to hold tokens and accumulative scores
         new_order = torch.arange(bsz).view(-1, 1).repeat(1, beam_size).view(-1)
         new_order = new_order.to(src_tokens.device).long()
@@ -334,15 +327,15 @@ class SequenceGenerator(nn.Module):
         encoder_output_new = model.reorder_encoder_out(encoder_output_new, new_order)
         # ensure encoder_outs is a List.
         # assert encoder_outs is not None
-        print("encoder_outs after new_order:", new_order)
+        print("_generate,encoder_outs after new_order:", new_order)
         # print("encoder_outs after reroder:", encoder_outs[0].position_embedding.shape)
-        print("encoder_output_new after reroder:", encoder_output_new[0].position_embedding.shape)
+        print("_generate,encoder_output_new after reroder:", encoder_output_new[0].position_embedding.shape)
 
         # initialize buffers
         scores = (torch.zeros(bsz * beam_size,
                               max_len + 1).to(src_tokens).float()
                   )  # +1 for eos; pad is never chosen for scoring
-        print("scores:", scores.shape)
+        print("_generate,scores:", scores.shape)
         tokens = (torch.zeros(bsz * beam_size,
                               max_len + 2).to(src_tokens).long().fill_(
                                   self.pad))  # +2 for eos and pad
@@ -417,7 +410,8 @@ class SequenceGenerator(nn.Module):
                     gen_code=self.gen_code,
                     zero_shot=self.zero_shot,
                     prefix_tokens=prefix_tokens)
-
+                print("lprobs:", lprobs.shape)
+                print("avg_attn_scores:", avg_attn_scores.shape)
             if self.lm_model is not None:
                 lm_out = self.lm_model(tokens[:, :step + 1])
                 probs = self.lm_model.get_normalized_probs(
